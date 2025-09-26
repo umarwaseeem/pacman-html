@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>pacman</title>
+    <style>
+        body { margin: 0; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.3/p5.min.js"></script>
+</head>
+<body>
+    <script>
+        
+// Game configuration and constants
+let CELL_SIZE = 30; // Size of each cell (wall, path, dot) in pixels
+let maze; // 2D array representing the game board
+let pacman; // Pacman object
+let ghosts = []; // Array of Ghost objects
+let score = 0;
+let lives = 3;
+let gameState = 'PLAYING'; // Possible states: 'PLAYING', 'GAME_OVER', 'WIN'
+
+let powerPelletTimer = 0; // Timer for how long ghosts remain in 'FRIGHTENED' state
+const FRIGHTENED_DURATION = 8 * 60; // 8 seconds at 60 frames per second
+
+// Maze representation (0 = path, 1 = wall, 2 = dot, 3 = power pellet, 4 = ghost house entry)
+// This is a simplified maze layout.
+const MAZE_LAYOUT = [
+  [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+  [1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1],
+  [1, 2, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 2, 1],
+  [1, 3, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 3, 1], // Power pellets (3)
+  [1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1],
+  [1, 2, 1, 1, 2, 1, 2, 1, 1, 1, 2, 1, 2, 1, 1, 2, 1],
+  [1, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 1, 2, 2, 2, 2, 1],
+  [1, 1, 1, 1, 2, 1, 1, 0, 0, 0, 1, 1, 2, 1, 1, 1, 1], // Ghost house walls and path (0)
+  [1, 1, 1, 1, 2, 1, 0, 4, 4, 4, 0, 1, 2, 1, 1, 1, 1], // Ghost house entry (4)
+  [1, 1, 1, 1, 2, 1, 0, 0, 0, 0, 0, 1, 2, 1, 1, 1, 1],
+  [1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1],
+  [1, 2, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 2, 1],
+  [1, 3, 2, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 2, 3, 1], // Power pellets (3)
+  [1, 1, 2, 1, 2, 1, 2, 1, 1, 1, 2, 1, 2, 1, 2, 1, 1],
+  [1, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 1, 2, 2, 2, 2, 1],
+  [1, 2, 1, 1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 2, 1],
+  [1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1],
+  [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+];
+
+// Directions
+const LEFT = 0;
+const RIGHT = 1;
+const UP = 2;
+const DOWN = 3;
+
+// Pacman class
+class Pacman {
+  constructor(startGridX, startGridY) {
+    this.startGridX = startGridX; // Store initial grid position
+    this.startGridY = startGridY;
+    this.gridX = startGridX;
+    this.gridY = startGridY;
+    // Pixel coordinates, centered in the cell
+    this.x = this.gridX * CELL_SIZE + CELL_SIZE / 2;
+    this.y = this.gridY * CELL_SIZE + CELL_SIZE / 2;
+    this.radius = CELL_SIZE / 3;
+    this.speed = 2;
+    this.dir = RIGHT; // Initial direction
+    this.nextDir = RIGHT; // Buffered direction for smooth turns
+    this.mouthOpen = 0; // 0 (closed) to 1 (open) for animation
+    this.mouthSpeed = 0.1;
+    this.angle1 = PI / 4; // Mouth angles for drawing
+    this.angle2 = TWO_PI - PI / 4;
+  }
+
+  // Helper to convert pixel to grid coordinates
+  toGrid(pixelPos) { return floor(pixelPos / CELL_SIZE); }
+
+  // Checks if Pac-Man can move in a given direction without hitting a wall
+  canMove(direction) {
+    let targetGridX = this.gridX;
+    let targetGridY = this.gridY;
+
+    // Pac-Man can only change direction if roughly centered in a cell
+    if (abs(this.x - (this.gridX * CELL_SIZE + CELL_SIZE / 2)) > 1 || abs(this.y - (this.gridY * CELL_SIZE + CELL_SIZE / 2)) > 1) {
+      return false;
+    }
+
+    switch (direction) {
+      case LEFT:  targetGridX--; break;
+      case RIGHT: targetGridX++; break;
+      case UP:    targetGridY--; break;
+      case DOWN:  targetGridY++; break;
+    }
+    // Return true if the target cell is not a wall (1)
+    return maze[targetGridY] && maze[targetGridY][targetGridX] !== 1;
+  }
+
+  update() {
+    // Attempt to change direction if at an intersection and `nextDir` is valid
+    if (this.canMove(this.nextDir)) {
+      this.dir = this.nextDir;
+    }
+
+    // Calculate movement based on current direction
+    let dx = 0;
+    let dy = 0;
+    switch (this.dir) {
+      case LEFT:  dx = -this.speed; break;
+      case RIGHT: dx = this.speed;  break;
+      case UP:    dy = -this.speed; break;
+      case DOWN:  dy = this.speed;  break;
+    }
+
+    let nextX = this.x + dx;
+    let nextY = this.y + dy;
+
+    // Predict next grid position
+    let currentGridX = this.toGrid(this.x);
+    let currentGridY = this.toGrid(this.y);
+    let nextGridX = this.toGrid(nextX);
+    let nextGridY = this.toGrid(nextY);
+
+    let blocked = false;
+
+    // Detailed wall collision check to stop precisely at walls
+    if (dx < 0 && maze[currentGridY][nextGridX] === 1 && nextX < currentGridX * CELL_SIZE + CELL_SIZE / 2) {
+      blocked = true;
+    } else if (dx > 0 && maze[currentGridY][nextGridX] === 1 && nextX > currentGridX * CELL_SIZE + CELL_SIZE / 2) {
+      blocked = true;
+    } else if (dy < 0 && maze[nextGridY][currentGridX] === 1 && nextY < currentGridY * CELL_SIZE + CELL_SIZE / 2) {
+      blocked = true;
+    } else if (dy > 0 && maze[nextGridY][currentGridX] === 1 && nextY > currentGridY * CELL_SIZE + CELL_SIZE / 2) {
+      blocked = true;
+    }
+
+    if (!blocked) {
+      this.x = nextX;
+      this.y = nextY;
+    } else {
+      // If blocked, snap to the center of the current cell to prevent partial overlaps
+      this.x = currentGridX * CELL_SIZE + CELL_SIZE / 2;
+      this.y = currentGridY * CELL_SIZE + CELL_SIZE / 2;
+    }
+
+    // Update current grid position
+    this.gridX = this.toGrid(this.x);
+    this.gridY = this.toGrid(this.y);
+
+    // Mouth animation
+    this.mouthOpen += this.mouthSpeed;
+    if (this.mouthOpen > 1 || this.mouthOpen < 0) {
+      this.mouthSpeed *= -1; // Reverse mouth animation direction
+    }
+    this.angle1 = map(this.mouthOpen, 0, 1, PI / 4, 0); // Varies from PI/4 (open) to 0 (closed)
+    this.angle2 = map(this.mouthOpen, 0, 1, TWO_PI - PI / 4, TWO_PI); // Varies from 7PI/4 to 2PI
+  }
+
+  draw() {
+    fill(255, 255, 0); // Yellow Pac-Man
+    noStroke();
+    push();
+    translate(this.x, this.y);
+    // Rotate Pac-Man to face the direction of movement
+    let rotation = 0;
+    if (this.dir === LEFT) rotation = PI;
+    else if (this.dir === UP) rotation = -PI / 2;
+    else if (this.dir === DOWN) rotation = PI / 2;
+    rotate(rotation);
+    arc(0, 0, this.radius * 2, this.radius * 2, this.angle1, this.angle2, PIE);
+    pop();
+  }
+
+  // Checks if Pac-Man is eating a dot or power pellet
+  eat() {
+    // Only register an eat if Pac-Man is perfectly centered on a grid square
+    if (abs(this.x - (this.gridX * CELL_SIZE + CELL_SIZE / 2)) < 1 && abs(this.y - (this.gridY * CELL_SIZE + CELL_SIZE / 2)) < 1) {
+      let currentCell = maze[this.gridY][this.gridX];
+      if (currentCell === 2) { // Regular dot
+        maze[this.gridY][this.gridX] = 0; // Remove dot by setting cell to path
+        score += 10;
+        return 'dot';
+      } else if (currentCell === 3) { // Power Pellet
+        maze[this.gridY][this.gridX] = 0; // Remove power pellet
+        score += 50;
+        return 'powerPellet';
+      }
+    }
+    return null; // Nothing eaten
+  }
+}
+
+// Ghost class
+class Ghost {
+  constructor(startGridX, startGridY, ghostColor, name) {
+    this.startGridX = startGridX; // Store initial grid position
+    this.startGridY = startGridY;
+    this.gridX = startGridX;
+    this.gridY = startGridY;
+    // Pixel coordinates, centered in the cell
+    this.x = this.gridX * CELL_SIZE + CELL_SIZE / 2;
+    this.y = this.gridY * CELL_SIZE + CELL_SIZE / 2;
+    this.color = ghostColor;
+    this.name = name; // For potential individual ghost AI (Blinky, Pinky, Inky, Clyde)
+    this.radius = CELL_SIZE / 3;
+    this.speed = 1.5;
+    this.dir = LEFT; // Initial direction
+    this.state = 'CHASE'; // 'CHASE', 'FRIGHTENED', 'EATEN'
+    this.target = createVector(0, 0); // Target for AI movement
+    this.frightenedColor = color(0, 0, 255); // Blue for frightened state
+    this.returnSpeed = 3; // Faster speed when 'EATEN'
+  }
+
+  // Resets ghost to its starting position and default state
+  reset() {
+    this.gridX = this.startGridX;
+    this.gridY = this.startGridY;
+    this.x = this.gridX * CELL_SIZE + CELL_SIZE / 2;
+    this.y = this.gridY * CELL_SIZE + CELL_SIZE / 2;
+    this.dir = LEFT;
+    this.state = 'CHASE';
+    this.speed = 1.5;
+  }
+
+  // Helper to convert pixel to grid coordinates
+  toGrid(pixelPos) { return floor(pixelPos / CELL_SIZE); }
+
+  // Determines valid moves from the current grid position
+  getPossibleMoves(currentGridX, currentGridY, currentDir) {
+    let moves = [];
+    let possibleDirections = [LEFT, RIGHT, UP, DOWN];
+
+    // Ghosts generally cannot reverse direction unless frightened or at a dead end
+    if (this.state !== 'FRIGHTENED') {
+      let oppositeDir;
+      if (currentDir === LEFT) oppositeDir = RIGHT;
+      else if (currentDir === RIGHT) oppositeDir = LEFT;
+      else if (currentDir === UP) oppositeDir = DOWN;
+      else if (currentDir === DOWN) oppositeDir = UP;
+      // Filter out the opposite direction unless it's the only option
+      if (!(possibleDirections.length === 1 && possibleDirections[0] === oppositeDir)) {
+         possibleDirections = possibleDirections.filter(d => d !== oppositeDir);
+      }
+    }
+
+    for (let dir of possibleDirections) {
+      let targetGridX = currentGridX;
+      let targetGridY = currentGridY;
+      switch (dir) {
+        case LEFT:  targetGridX--; break;
+        case RIGHT: targetGridX++; break;
+        case UP:    targetGridY--; break;
+        case DOWN:  targetGridY++; break;
+      }
+      // Check if target cell is not a wall (1). Ghosts can move through ghost house entry (4).
+      if (maze[targetGridY] && maze[targetGridY][targetGridX] !== 1) {
+        moves.push({ dir: dir, x: targetGridX, y: targetGridY });
+      }
+    }
+    return moves;
+  }
+
+  // Sets the target grid coordinates for the ghost's AI
+  setTarget(targetX, targetY) {
+    this.target.set(targetX, targetY);
+  }
+
+  update() {
+    // Ghosts only decide new direction when centered within a cell
+    if (dist(this.x, this.y, this.gridX * CELL_SIZE + CELL_SIZE / 2, this.gridY * CELL_SIZE + CELL_SIZE / 2) < this.speed / 2) {
+      this.x = this.gridX * CELL_SIZE + CELL_SIZE / 2; // Snap to center
+      this.y = this.gridY * CELL_SIZE + CELL_SIZE / 2; // Snap to center
+
+      let possibleMoves = this.getPossibleMoves(this.gridX, this.gridY, this.dir);
+
+      if (possibleMoves.length > 0) {
+        let bestMove = null;
+        let minDist = Infinity;
+
+        if (this.state === 'FRIGHTENED') {
+          // When frightened, pick a random valid direction
+          this.dir = random(possibleMoves).dir;
+        } else if (this.state === 'EATEN') {
+          // When eaten, target the ghost house entry
+          this.setTarget(8, 8); // Center of ghost house entrance (approx)
+          for (let move of possibleMoves) {
+            let d = dist(move.x, move.y, this.target.x, this.target.y);
+            if (d < minDist) {
+              minDist = d;
+              bestMove = move;
+            }
+          }
+          if (bestMove) this.dir = bestMove.dir;
+
+          // If inside the ghost house, revert to CHASE state
+          if (maze[this.gridY][this.gridX] === 4) { // 4 is ghost house entry
+            this.state = 'CHASE';
+            this.speed = 1.5; // Reset speed
+          }
+        } else { // CHASE or SCATTER (using Pacman's position as target for simplicity)
+          // In this simplified version, ghosts always chase Pac-Man directly.
+          // A full game would have different targeting for each ghost and a 'SCATTER' phase.
+          this.setTarget(pacman.gridX, pacman.gridY); // Target Pacman
+
+          // Find the move that gets closest to the target
+          for (let move of possibleMoves) {
+            let d = dist(move.x, move.y, this.target.x, this.target.y);
+            if (d < minDist) {
+              minDist = d;
+              bestMove = move;
+            }
+          }
+          if (bestMove) this.dir = bestMove.dir;
+        }
+      }
+    }
+
+    // Move the ghost
+    let dx = 0;
+    let dy = 0;
+    let currentSpeed = this.speed;
+    if (this.state === 'FRIGHTENED') currentSpeed = this.speed * 0.7; // Slower when frightened
+    if (this.state === 'EATEN') currentSpeed = this.returnSpeed; // Faster when returning to house
+
+    switch (this.dir) {
+      case LEFT:  dx = -currentSpeed; break;
+      case RIGHT: dx = currentSpeed;  break;
+      case UP:    dy = -currentSpeed; break;
+      case DOWN:  dy = currentSpeed;  break;
+    }
+
+    this.x += dx;
+    this.y += dy;
+
+    // Update current grid position
+    this.gridX = this.toGrid(this.x);
+    this.gridY = this.toGrid(this.y);
+  }
+
+  draw() {
+    push();
+    translate(this.x, this.y);
+
+    let ghostColor = this.color;
+    if (this.state === 'FRIGHTENED') {
+      // Blink between blue and white if frightened time is running out
+      if (powerPelletTimer < FRIGHTENED_DURATION / 3 && frameCount % 30 < 15) {
+        ghostColor = color(255); // White
+      } else {
+        ghostColor = this.frightenedColor; // Blue
+      }
+    } else if (this.state === 'EATEN') {
+      ghostColor = color(100); // Grey when returning (eyes only)
+    }
+
+    fill(ghostColor);
+    noStroke();
+
+    // Body shape (a simple rounded rectangle with a wavy bottom)
+    beginShape();
+    vertex(-this.radius, this.radius);
+    vertex(-this.radius, -this.radius);
+    vertex(this.radius, -this.radius);
+    vertex(this.radius, this.radius);
+    // Wavy skirt effect
+    vertex(this.radius * 0.6, this.radius * 0.6);
+    vertex(this.radius * 0.2, this.radius);
+    vertex(0, this.radius * 0.6);
+    vertex(-this.radius * 0.2, this.radius);
+    vertex(-this.radius * 0.6, this.radius * 0.6);
+    endShape(CLOSE);
+
+    // Eyes
+    let eyeOffsetX = this.radius * 0.35;
+    let eyeOffsetY = -this.radius * 0.35;
+    let eyeRadius = this.radius * 0.2;
+
+    if (this.state === 'EATEN') {
+      // Only draw white eyes when eaten
+      fill(255);
+      ellipse(-eyeOffsetX, eyeOffsetY, eyeRadius * 2, eyeRadius * 2);
+      ellipse(eyeOffsetX, eyeOffsetY, eyeRadius * 2, eyeRadius * 2);
+    } else {
+      fill(255); // White eyes
+      ellipse(-eyeOffsetX, eyeOffsetY, eyeRadius * 2, eyeRadius * 2);
+      ellipse(eyeOffsetX, eyeOffsetY, eyeRadius * 2, eyeRadius * 2);
+
+      // Pupils (black, looking in direction of movement)
+      fill(0); // Black pupils
+      let pupilOffsetX = 0;
+      let pupilOffsetY = 0;
+      let pupilMove = eyeRadius * 0.5; // How much pupils shift
+      switch (this.dir) {
+        case LEFT:  pupilOffsetX = -pupilMove; break;
+        case RIGHT: pupilOffsetX = pupilMove;  break;
+        case UP:    pupilOffsetY = -pupilMove; break;
+        case DOWN:  pupilOffsetY = pupilMove;  break;
+      }
+      ellipse(-eyeOffsetX + pupilOffsetX, eyeOffsetY + pupilOffsetY, eyeRadius, eyeRadius);
+      ellipse(eyeOffsetX + pupilOffsetX, eyeOffsetY + pupilOffsetY, eyeRadius, eyeRadius);
+    }
+    pop();
+  }
+}
+
+// p5.js setup function
+function setup() {
+  // Canvas size based on maze dimensions + extra space for UI
+  createCanvas(MAZE_LAYOUT[0].length * CELL_SIZE, MAZE_LAYOUT.length * CELL_SIZE + 50);
+  newGame(); // Initialize a new game
+}
+
+// Sets up a completely new game
+function newGame() {
+  // Create a deep copy of the maze layout to reset all dots
+  maze = MAZE_LAYOUT.map(row => [...row]);
+
+  pacman = new Pacman(1, 1); // Pacman starts at (1,1) grid position
+  ghosts = [];
+  // Add ghosts with their starting positions and colors
+  ghosts.push(new Ghost(8, 8, color(255, 0, 0), 'Blinky')); // Red ghost
+  ghosts.push(new Ghost(9, 8, color(255, 184, 255), 'Pinky')); // Pink ghost
+  // Can add more ghosts here if desired
+  // ghosts.push(new Ghost(7, 8, color(0, 255, 255), 'Inky'));
+  // ghosts.push(new Ghost(10, 8, color(255, 184, 82), 'Clyde'));
+
+  score = 0;
+  lives = 3;
+  powerPelletTimer = 0;
+  gameState = 'PLAYING';
+}
+
+// Resets Pac-Man and ghosts to starting positions after losing a life
+function resetLevel() {
+  pacman.x = pacman.startGridX * CELL_SIZE + CELL_SIZE / 2;
+  pacman.y = pacman.startGridY * CELL_SIZE + CELL_SIZE / 2;
+  pacman.gridX = pacman.startGridX;
+  pacman.gridY = pacman.startGridY;
+  pacman.dir = RIGHT;
+  pacman.nextDir = RIGHT;
+
+  for (let ghost of ghosts) {
+    ghost.reset();
+  }
+  powerPelletTimer = 0; // Ensure frightened mode is off after reset
+}
+
+// Draws the maze elements (walls, dots, power pellets)
+function drawMaze() {
+  for (let y = 0; y < maze.length; y++) {
+    for (let x = 0; x < maze[y].length; x++) {
+      let cell = maze[y][x];
+      let pixelX = x * CELL_SIZE;
+      let pixelY = y * CELL_SIZE;
+
+      if (cell === 1) { // Wall
+        fill(0, 0, 255); // Blue walls
+        noStroke();
+        rect(pixelX, pixelY, CELL_SIZE, CELL_SIZE);
+      } else if (cell === 2) { // Regular Dot
+        fill(255); // White dots
+        noStroke();
+        ellipse(pixelX + CELL_SIZE / 2, pixelY + CELL_SIZE / 2, CELL_SIZE / 6);
+      } else if (cell === 3) { // Power Pellet
+        fill(255); // White power pellets
+        noStroke();
+        ellipse(pixelX + CELL_SIZE / 2, pixelY + CELL_SIZE / 2, CELL_SIZE / 3);
+      }
+      // 0 (path) and 4 (ghost house entry) are drawn as empty space
+    }
+  }
+}
+
+// Checks if all dots have been eaten
+function checkWinCondition() {
+  let dotsRemaining = 0;
+  for (let y = 0; y < maze.length; y++) {
+    for (let x = 0; x < maze[y].length; x++) {
+      if (maze[y][x] === 2 || maze[y][x] === 3) {
+        dotsRemaining++;
+      }
+    }
+  }
+  if (dotsRemaining === 0) {
+    gameState = 'WIN';
+  }
+}
+
+// p5.js draw function (main game loop)
+function draw() {
+  background(0); // Black background
+
+  if (gameState === 'PLAYING') {
+    pacman.update(); // Update Pac-Man's position and animation
+    let eatenItem = pacman.eat(); // Check if Pac-Man ate something
+
+    if (eatenItem === 'powerPellet') {
+      powerPelletTimer = FRIGHTENED_DURATION; // Start frightened timer
+      for (let ghost of ghosts) {
+        if (ghost.state !== 'EATEN') { // Only frighten ghosts not already eaten
+          ghost.state = 'FRIGHTENED';
+          // Ghosts reverse direction when becoming frightened
+          if (ghost.dir === LEFT) ghost.dir = RIGHT;
+          else if (ghost.dir === RIGHT) ghost.dir = LEFT;
+          else if (ghost.dir === UP) ghost.dir = DOWN;
+          else if (ghost.dir === DOWN) ghost.dir = UP;
+        }
+      }
+    }
+
+    // Manage frightened timer
+    if (powerPelletTimer > 0) {
+      powerPelletTimer--;
+      if (powerPelletTimer === 0) {
+        // When timer runs out, ghosts revert to CHASE state
+        for (let ghost of ghosts) {
+          if (ghost.state === 'FRIGHTENED') {
+            ghost.state = 'CHASE';
+          }
+        }
+      }
+    }
+
+    for (let ghost of ghosts) {
+      ghost.update(); // Update ghost position and AI
+
+      // Check collision between Pac-Man and ghost
+      let d = dist(pacman.x, pacman.y, ghost.x, ghost.y);
+      if (d < pacman.radius + ghost.radius - 5) { // Collision detected (with a small buffer)
+        if (ghost.state === 'FRIGHTENED') {
+          score += 200; // Score for eating a ghost
+          ghost.state = 'EATEN'; // Ghost returns to house
+        } else if (ghost.state === 'CHASE') { // Only take damage if ghost is chasing
+          lives--;
+          if (lives <= 0) {
+            gameState = 'GAME_OVER';
+          } else {
+            resetLevel(); // Lose a life, reset level (Pac-Man and ghosts)
+          }
+        }
+      }
+    }
+    checkWinCondition(); // Check if all dots are eaten
+  }
+
+  drawMaze(); // Draw maze elements
+  pacman.draw(); // Draw Pac-Man
+  for (let ghost of ghosts) {
+    ghost.draw(); // Draw each ghost
+  }
+
+  // Display score and lives UI
+  fill(255); // White text
+  textSize(20);
+  textAlign(LEFT, BASELINE);
+  text('Score: ' + score, 10, height - 30);
+  text('Lives: ' + lives, 10, height - 10);
+
+  // Game over / Win screens
+  if (gameState === 'GAME_OVER') {
+    fill(255, 0, 0); // Red text
+    textSize(50);
+    textAlign(CENTER, CENTER);
+    text('GAME OVER', width / 2, height / 2);
+    textSize(20);
+    text('Press R to Restart', width / 2, height / 2 + 40);
+  } else if (gameState === 'WIN') {
+    fill(0, 255, 0); // Green text
+    textSize(50);
+    textAlign(CENTER, CENTER);
+    text('YOU WIN!', width / 2, height / 2);
+    textSize(20);
+    text('Press R to Restart', width / 2, height / 2 + 40);
+  }
+}
+
+// p5.js keyPressed function for handling input
+function keyPressed() {
+  if (gameState === 'GAME_OVER' || gameState === 'WIN') {
+    if (key === 'r' || key === 'R') {
+      newGame(); // Restart game
+    }
+    return;
+  }
+
+  // Buffer Pac-Man's next direction input
+  let newDir;
+  if (keyCode === LEFT_ARROW) {
+    newDir = LEFT;
+  } else if (keyCode === RIGHT_ARROW) {
+    newDir = RIGHT;
+  } else if (keyCode === UP_ARROW) {
+    newDir = UP;
+  } else if (keyCode === DOWN_ARROW) {
+    newDir = DOWN;
+  }
+
+  if (newDir !== undefined) {
+    pacman.nextDir = newDir;
+  }
+}
+
+    </script>
+</body>
+</html>
